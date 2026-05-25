@@ -6,6 +6,13 @@ The main idea behind this script is to get the way to manage my ManaBox MTG coll
 
 ![sample screenshot](./examples/screenshot.png)
 
+## Usage
+
+- Import CSV from your ManaBox (by default it uses name `ManaBox_Collection.csv`)
+- Install needed requirements from `requirements.txt`
+- Run `python report.py`
+- Open resulted `collection_report.html` in browser
+
 ## Useful docs
 
 - [spec.md](spec.md) - project specification
