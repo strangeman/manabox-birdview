@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import json
 import logging
 import sys
@@ -156,12 +157,17 @@ def _fetch_bulk_url(session: requests.Session) -> str:
     r = session.get(SCRYFALL_BULK_META_URL, timeout=30)
     r.raise_for_status()
     payload = r.json()
-    url = payload.get("download_uri")
+    # Scryfall now publishes the bulk as gzipped JSONL under
+    # `jsonl_download_uri`; `download_uri` was the older plain-JSON-array
+    # form. Accept either so the script survives another swap back.
+    url = payload.get("jsonl_download_uri") or payload.get("download_uri")
     if not url:
-        raise RuntimeError(f"No download_uri in bulk-data response: {payload}")
+        raise RuntimeError(f"No download URI in bulk-data response: {payload}")
     logging.info(
         "Bulk URI: %s (size ~%s bytes, updated %s)",
-        url, payload.get("size", "?"), payload.get("updated_at", "?"),
+        url,
+        payload.get("compressed_size") or payload.get("size", "?"),
+        payload.get("updated_at", "?"),
     )
     return url
 
@@ -178,32 +184,61 @@ def _stream_bulk_to_file(session: requests.Session, url: str, dest: Path) -> Non
         logging.info("Downloaded %d bytes (%.1f MB)", total, total / 1024 / 1024)
 
 
+def _open_bulk(path: Path):
+    """Open the bulk dump, transparently decompressing a gzipped one.
+
+    The `.jsonl.gz` is served as `application/gzip` with no `Content-Encoding`
+    header, so requests hands us the raw compressed bytes.
+    """
+    with open(path, "rb") as probe:
+        if probe.read(2) == b"\x1f\x8b":
+            return gzip.open(path, "rb")
+    return open(path, "rb")
+
+
+def _bulk_is_json_array(path: Path) -> bool:
+    with _open_bulk(path) as f:
+        return f.read(64).lstrip().startswith(b"[")
+
+
 def _extract_from_bulk(path: Path, needed: set[str]) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
-    with open(path, "rb") as f:
-        if HAS_IJSON:
-            for card in ijson.items(f, "item"):
-                cid = card.get("id")
-                if cid in needed and cid not in out:
-                    out[cid] = {
-                        "color_identity": list(card.get("color_identity") or []),
-                        "type_line": card.get("type_line") or "",
-                    }
-                    if len(out) == len(needed):
+
+    def take(card: dict[str, Any]) -> bool:
+        """Keep `card` if it is needed; return True once nothing is left."""
+        cid = card.get("id")
+        if cid in needed and cid not in out:
+            out[cid] = {
+                "color_identity": list(card.get("color_identity") or []),
+                "type_line": card.get("type_line") or "",
+            }
+        return len(out) == len(needed)
+
+    if _bulk_is_json_array(path):
+        # Legacy format: one big JSON array.
+        with _open_bulk(path) as f:
+            if HAS_IJSON:
+                for card in ijson.items(f, "item"):
+                    if take(card):
                         break
-        else:
-            logging.warning(
-                "ijson not installed; loading entire bulk into memory. "
-                "`pip install ijson` for streaming."
-            )
-            data = json.load(f)
-            for card in data:
-                cid = card.get("id")
-                if cid in needed:
-                    out[cid] = {
-                        "color_identity": list(card.get("color_identity") or []),
-                        "type_line": card.get("type_line") or "",
-                    }
+            else:
+                logging.warning(
+                    "ijson not installed; loading entire bulk into memory. "
+                    "`pip install ijson` for streaming."
+                )
+                for card in json.load(f):
+                    take(card)
+        return out
+
+    # Current format: JSONL — one card object per line, so a plain line loop
+    # already streams and ijson is not needed.
+    with _open_bulk(path) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            if take(json.loads(line)):
+                break
     return out
 
 
@@ -249,7 +284,7 @@ def enrich(
 
     session = _make_session()
     bulk_url = _fetch_bulk_url(session)
-    bulk_path = cache_path.parent / ".scryfall_bulk.tmp.json"
+    bulk_path = cache_path.parent / ".scryfall_bulk.tmp"  # may be gzipped JSONL
     try:
         _stream_bulk_to_file(session, bulk_url, bulk_path)
         found = _extract_from_bulk(bulk_path, missing)

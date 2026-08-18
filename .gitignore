@@ -1,4 +1,6 @@
 __pycache__
 .scryfall_cache.json
-./collection_report.html
+.scryfall_bulk.tmp
+/collection_report.html
+/report_data.json
 ManaBox_Collection.csv
