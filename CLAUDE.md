@@ -59,7 +59,7 @@ Reference dataset has ~6100 unique Scryfall IDs. Per-card requests are explicitl
 
 1. Read CSV, collect needed Scryfall IDs.
 2. Load `.scryfall_cache.json` if present; if it covers all needed IDs (and `--refresh-cache` not passed), skip the network entirely.
-3. Otherwise: `GET https://api.scryfall.com/bulk-data/default-cards` → fetch the bulk URL → stream-parse (prefer `ijson` for the ~500MB JSON), keep only `color_identity` and `type_line` for needed IDs, merge into cache, persist.
+3. Otherwise: `GET https://api.scryfall.com/bulk-data/default-cards` → take `jsonl_download_uri` (current: **gzipped JSONL**, served as `application/gzip` with no `Content-Encoding`, so `requests` does *not* auto-decompress) or the legacy `download_uri` (plain JSON array) → stream-parse, keep only `color_identity` and `type_line` for needed IDs, merge into cache, persist. Both payload shapes are sniffed at parse time (gzip magic bytes, then `[` vs. a bare object); `ijson` is only needed for the legacy array form.
 4. Fallback for missing IDs: individual `GET https://api.scryfall.com/cards/{id}` with **≥100 ms** delay between requests. Abort with a clear error if >50 IDs need this fallback.
 
 Required HTTP headers on every Scryfall call: `User-Agent: mtg-collection-report/1.0`, `Accept: application/json`.

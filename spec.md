@@ -91,14 +91,16 @@ The report visualizes the collection broken down by four dimensions:
 
 ### Strategy — bulk download, not individual requests
 
-Scryfall publishes bulk data at `https://api.scryfall.com/bulk-data`. Download `default-cards` (or `oracle-cards` if it suffices — but `default-cards` is safer since it contains every printing with concrete Scryfall IDs). This is one large JSON (~500 MB); parse it incrementally, keep only the fields we need for the Scryfall IDs that appear in the CSV, and store them in a local JSON cache `SCRYFALL_CACHE_PATH`.
+Scryfall publishes bulk data at `https://api.scryfall.com/bulk-data`. Download `default-cards` (or `oracle-cards` if it suffices — but `default-cards` is safer since it contains every printing with concrete Scryfall IDs). As of 2026-08 this is a gzipped JSONL file (~74 MB compressed, one card object per line); older Scryfall versions served a single ~500 MB JSON array, and the script still reads both. Parse it incrementally, keep only the fields we need for the Scryfall IDs that appear in the CSV, and store them in a local JSON cache `SCRYFALL_CACHE_PATH`.
 
 Algorithm:
 
 1. Read the CSV, collect the set of required `Scryfall ID`s.
 2. Load the cache from `SCRYFALL_CACHE_PATH` if it exists.
 3. If every required ID is already in the cache — enrichment is done.
-4. Otherwise: fetch the URL of the current `default-cards` bulk via `GET https://api.scryfall.com/bulk-data/default-cards`, download the JSON, stream it via `ijson` (or read it line by line if the bulk is a plain array — in which case `json.load` would work, but streaming is preferred), extract the required IDs, append them to the cache, and save.
+4. Otherwise: fetch the URL of the current `default-cards` bulk via `GET https://api.scryfall.com/bulk-data/default-cards`, download it, stream-parse it, extract the required IDs, append them to the cache, and save. Two details about that response:
+   - The download URL is `jsonl_download_uri` (with `compressed_size`); the older `download_uri`/`size` pair is no longer present. Read whichever key is available.
+   - `jsonl_download_uri` points at a `.jsonl.gz` served as `Content-Type: application/gzip` **without** a `Content-Encoding` header, so HTTP clients hand over the raw compressed bytes — the script must gunzip it itself. Detect the format from the payload rather than the URL: gzip magic bytes `\x1f\x8b`, then a leading `[` for the legacy JSON array vs. a bare object for JSONL. JSONL streams fine with a plain line loop; `ijson` is only needed for the legacy array.
 5. If some ID isn't found in the bulk — fall back to an individual `GET https://api.scryfall.com/cards/{id}` with **at least 100 ms** between requests (Scryfall asks for 50–100 ms). Log such cases. If there are many of them (>50), abort and inform the user.
 
 ### Rate-limit compliance and being polite to Scryfall
@@ -214,7 +216,7 @@ These may appear in v2; the code should be structured so they don't require a re
 ## Technical requirements for the script
 
 - Python 3.11+.
-- Minimal dependencies: standard library + `requests` (for Scryfall) + optionally `ijson` (for streaming the bulk). No pandas for the sake of pandas — `csv` and `collections` are enough, the volumes are small.
+- Minimal dependencies: standard library + `requests` (for Scryfall) + optionally `ijson` (only for the legacy JSON-array bulk; the current JSONL bulk streams line by line with the stdlib). No pandas for the sake of pandas — `csv` and `collections` are enough, the volumes are small.
 - If Plotly is picked for rendering — `plotly` in `requirements.txt`. HTML generation via `plotly.offline.plot(..., include_plotlyjs='inline' or 'cdn', output_type='div')` + manual HTML wrapping with filters.
 - CLI:
   ```
